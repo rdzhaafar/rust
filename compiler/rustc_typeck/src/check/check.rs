@@ -6,6 +6,7 @@ use super::compare_method::{compare_const_impl, compare_impl_method, compare_ty_
 use super::*;
 
 use rustc_attr as attr;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::{Applicability, ErrorGuaranteed, MultiSpan};
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
@@ -1415,52 +1416,91 @@ fn check_enum<'tcx>(
         }
     }
 
-    let mut disr_vals: Vec<Discr<'tcx>> = Vec::with_capacity(vs.len());
-    // This tracks the previous variant span (in the loop) incase we need it for diagnostics
-    let mut prev_variant_span: Span = DUMMY_SP;
-    for ((_, discr), v) in iter::zip(def.discriminants(tcx), vs) {
-        // Check for duplicate discriminant values
-        if let Some(i) = disr_vals.iter().position(|&x| x.val == discr.val) {
-            let variant_did = def.variant(VariantIdx::new(i)).def_id;
-            let variant_i_hir_id = tcx.hir().local_def_id_to_hir_id(variant_did.expect_local());
-            let variant_i = tcx.hir().expect_variant(variant_i_hir_id);
-            let i_span = match variant_i.disr_expr {
-                Some(ref expr) => tcx.hir().span(expr.hir_id),
-                None => tcx.def_span(variant_did),
-            };
-            let span = match v.disr_expr {
-                Some(ref expr) => tcx.hir().span(expr.hir_id),
-                None => v.span,
-            };
-            let display_discr = format_discriminant_overflow(tcx, v, discr);
-            let display_discr_i = format_discriminant_overflow(tcx, variant_i, disr_vals[i]);
-            let no_disr = v.disr_expr.is_none();
+    // Check for duplicate discriminant assignments
+    let mut variants: FxHashMap<Discr<'_>, Vec<&hir::Variant<'_>>> =
+        FxHashMap::with_capacity_and_hasher(vs.len(), Default::default());
+    let mut has_dups = false;
+    for ((_, d), v) in iter::zip(def.discriminants(tcx), vs) {
+        if !variants.contains_key(&d) {
+            variants.insert(d, vec![v]);
+        } else {
+            has_dups = true;
+            variants.get_mut(&d).unwrap().push(v);
+        }
+    }
+    if has_dups {
+        for (discr, var) in variants {
+            // Non-duplicate variant
+            if var.len() == 1 {
+                continue;
+            }
+            // Else, report the duplicates
+            let first = var[0];
+            let rest = &var[1..];
             let mut err = struct_span_err!(
                 tcx.sess,
                 sp,
                 E0081,
                 "discriminant value `{}` assigned more than once",
-                discr,
+                discr
             );
-
-            err.span_label(i_span, format!("first assignment of {display_discr_i}"));
-            err.span_label(span, format!("second assignment of {display_discr}"));
-
-            if no_disr {
+            err.span_label(first.span, format!("first assignment of `{}`", discr));
+            for dup in rest {
                 err.span_label(
-                    prev_variant_span,
-                    format!(
-                        "assigned discriminant for `{}` was incremented from this discriminant",
-                        v.ident
-                    ),
+                    dup.span,
+                    format!("duplicate assignment of `{}`", discr)
                 );
             }
             err.emit();
         }
-
-        disr_vals.push(discr);
-        prev_variant_span = v.span;
     }
+
+    // let mut disr_vals: Vec<Discr<'tcx>> = Vec::with_capacity(vs.len());
+    // // This tracks the previous variant span (in the loop) incase we need it for diagnostics
+    // let mut prev_variant_span: Span = DUMMY_SP;
+    // for ((_, discr), v) in iter::zip(def.discriminants(tcx), vs) {
+    //     // Check for duplicate discriminant values
+    //     if let Some(i) = disr_vals.iter().position(|&x| x.val == discr.val) {
+    //         let variant_did = def.variant(VariantIdx::new(i)).def_id;
+    //         let variant_i_hir_id = tcx.hir().local_def_id_to_hir_id(variant_did.expect_local());
+    //         let variant_i = tcx.hir().expect_variant(variant_i_hir_id);
+    //         let i_span = match variant_i.disr_expr {
+    //             Some(ref expr) => tcx.hir().span(expr.hir_id),
+    //             None => tcx.def_span(variant_did),
+    //         };
+    //         let span = match v.disr_expr {
+    //             Some(ref expr) => tcx.hir().span(expr.hir_id),
+    //             None => v.span,
+    //         };
+    //         let display_discr = format_discriminant_overflow(tcx, v, discr);
+    //         let display_discr_i = format_discriminant_overflow(tcx, variant_i, disr_vals[i]);
+    //         let no_disr = v.disr_expr.is_none();
+    //         let mut err = struct_span_err!(
+    //             tcx.sess,
+    //             sp,
+    //             E0081,
+    //             "discriminant value `{}` assigned more than once",
+    //             discr,
+    //         );
+
+    //         err.span_label(i_span, format!("first assignment of {display_discr_i}"));
+    //         err.span_label(span, format!("second assignment of {display_discr}"));
+
+    //         if no_disr {
+    //             err.span_label(
+    //                 prev_variant_span,
+    //                 format!(
+    //                     "assigned discriminant for `{}` was incremented from this discriminant",
+    //                     v.ident
+    //                 ),
+    //             );
+    //         }
+    //         err.emit();
+    //     }
+
+    //     disr_vals.push(discr);
+    //     prev_variant_span = v.span;
+    // }
 
     check_representable(tcx, sp, def_id);
     check_transparent(tcx, sp, def);
@@ -1469,6 +1509,7 @@ fn check_enum<'tcx>(
 /// In the case that a discriminant is both a duplicate and an overflowing literal,
 /// we insert both the assigned discriminant and the literal it overflowed from into the formatted
 /// output. Otherwise we format the discriminant normally.
+#[allow(dead_code)]
 fn format_discriminant_overflow<'tcx>(
     tcx: TyCtxt<'tcx>,
     variant: &hir::Variant<'_>,

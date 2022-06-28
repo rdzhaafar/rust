@@ -22,9 +22,9 @@ use rustc_span::{sym, DUMMY_SP};
 use rustc_target::abi::{Integer, Size, TargetDataLayout};
 use rustc_target::spec::abi::Abi;
 use smallvec::SmallVec;
-use std::{fmt, iter};
+use std::{fmt, iter, hash::Hash, cmp::Eq};
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Discr<'tcx> {
     /// Bit representation of the discriminant (e.g., `-128i8` is `0xFF_u128`).
     pub val: u128,
