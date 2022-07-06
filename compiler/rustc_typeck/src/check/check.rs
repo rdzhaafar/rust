@@ -1416,47 +1416,7 @@ fn check_enum<'tcx>(
         }
     }
 
-    // Check for duplicate discriminant assignments
-    let mut variants: FxHashMap<Discr<'_>, Vec<&hir::Variant<'_>>> =
-        FxHashMap::with_capacity_and_hasher(vs.len(), Default::default());
-    let mut has_dups = false;
-    for ((_, d), v) in iter::zip(def.discriminants(tcx), vs) {
-        if !variants.contains_key(&d) {
-            variants.insert(d, vec![v]);
-        } else {
-            has_dups = true;
-            variants.get_mut(&d).unwrap().push(v);
-        }
-    }
-    if has_dups {
-        for (discr, var) in variants {
-            // Non-duplicate variant
-            if var.len() == 1 {
-                continue;
-            }
-            // Else, report the duplicates
-            let first = var[0];
-            let rest = &var[1..];
-            let mut err = struct_span_err!(
-                tcx.sess,
-                sp,
-                E0081,
-                "discriminant value `{}` assigned more than once",
-                discr
-            );
-            err.span_label(first.span, format!("first assignment of `{}`", discr));
-            for dup in rest {
-                err.span_label(
-                    dup.span,
-                    format!("duplicate assignment of `{}`", discr)
-                );
-            }
-            err.emit();
-        }
-    }
-
     // let mut disr_vals: Vec<Discr<'tcx>> = Vec::with_capacity(vs.len());
-    // // This tracks the previous variant span (in the loop) incase we need it for diagnostics
     // let mut prev_variant_span: Span = DUMMY_SP;
     // for ((_, discr), v) in iter::zip(def.discriminants(tcx), vs) {
     //     // Check for duplicate discriminant values
@@ -1502,8 +1462,81 @@ fn check_enum<'tcx>(
     //     prev_variant_span = v.span;
     // }
 
+    check_discriminant_duplicates(tcx, sp, vs, def);
     check_representable(tcx, sp, def_id);
     check_transparent(tcx, sp, def);
+}
+
+fn check_discriminant_duplicates<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    sp: Span,
+    vs: &'tcx [hir::Variant<'_>],
+    def: ty::AdtDef<'tcx>,
+) {
+    let mut variants: FxHashMap<Discr<'_>, Vec<(usize, &hir::Variant<'_>)>> =
+        FxHashMap::with_capacity_and_hasher(vs.len(), Default::default());
+    let mut has_dups = false;
+    for (i, ((_, d), v)) in iter::zip(def.discriminants(tcx), vs).enumerate() {
+        if !variants.contains_key(&d) {
+            variants.insert(d, vec![(i, v)]);
+        } else {
+            has_dups = true;
+            variants.get_mut(&d).unwrap().push((i, v));
+        }
+    }
+    if !has_dups {
+        return;
+    }
+    for (discr, vars) in variants {
+        // Discriminant without duplicates
+        if vars.len() == 1 {
+            continue;
+        }
+
+        let first = vars[0].1;
+        let rest = &vars[1..];
+        let mut err = struct_span_err!(
+            tcx.sess,
+            sp,
+            E0081,
+            "discriminant value `{}` assigned more than once",
+            discr
+        );
+
+        let first_span = match first.disr_expr {
+            Some(ref disr_expr) => tcx.hir().span(disr_expr.hir_id),
+            None => first.span,
+        };
+        err.span_label(first_span, format!("first assignment of `{}`", discr));
+
+        for (_i, dup) in rest {
+            let dup_span = match dup.disr_expr {
+                Some(ref disr_expr) => tcx.hir().span(disr_expr.hir_id),
+                None => dup.span,
+            };
+
+            let label = {
+                let mut label = format!("duplicate assignment of `{}`", discr);
+                // Check for overflow
+                if let Some(expr) = &dup.disr_expr {
+                    let body = &tcx.hir().body(expr.body).value;
+                    let lit = &body.kind;
+                    if let rustc_ast::LitKind::Int(val, kind) = &lit.node {
+
+                    };
+                };
+
+                // Check if incremented from a negative literal
+                if let Some(disr_expr) = vs[i - 1].disr_expr {
+                    
+                }
+
+                label
+            };
+            err.span_label(dup_span, label);
+        }
+        err.emit();
+    }
 }
 
 /// In the case that a discriminant is both a duplicate and an overflowing literal,

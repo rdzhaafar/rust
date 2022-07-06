@@ -22,7 +22,7 @@ use rustc_span::{sym, DUMMY_SP};
 use rustc_target::abi::{Integer, Size, TargetDataLayout};
 use rustc_target::spec::abi::Abi;
 use smallvec::SmallVec;
-use std::{fmt, iter, hash::Hash, cmp::Eq};
+use std::{cmp::Eq, fmt, hash::Hash, iter};
 
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Discr<'tcx> {
